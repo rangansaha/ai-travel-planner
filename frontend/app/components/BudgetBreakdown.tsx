@@ -15,7 +15,7 @@ export default function BudgetBreakdown({
     budgetData,
     totalBudget,
 }: BudgetBreakdownProps) {
-    const totalEstimated = Object.values(budgetData).reduce(
+    const totalEstimated = Object.values(budgetData ?? {}).reduce(
         (total, value) => total + Number(value),
         0
     );

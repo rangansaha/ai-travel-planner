@@ -108,6 +108,58 @@ export default function Home() {
   const [loadingSavedTrips, setLoadingSavedTrips] = useState(false);
 
   /* =========================================================
+     READ AN ERROR MESSAGE OUT OF A FAILED RESPONSE
+  ========================================================= */
+
+  async function extractErrorMessage(
+    response: Response,
+    fallback: string
+  ): Promise<string> {
+    let body: any = null;
+
+    try {
+      body = await response.json();
+    } catch {
+      return fallback;
+    }
+
+    /* FastAPI HTTPException: { detail: "..." } */
+
+    if (typeof body?.detail === "string") {
+      return body.detail;
+    }
+
+    /* FastAPI 422 validation: { detail: [{ loc, msg, type }] } */
+
+    if (Array.isArray(body?.detail)) {
+      const messages = body.detail
+        .map(
+          (item: any) =>
+            typeof item?.msg === "string"
+              ? item.msg
+              : null
+        )
+        .filter(Boolean);
+
+      if (messages.length) {
+        return messages.join(", ");
+      }
+    }
+
+    /* Legacy HTTP-200 error shapes, harmless to keep */
+
+    if (typeof body?.plan?.error === "string") {
+      return body.plan.error;
+    }
+
+    if (typeof body?.error === "string") {
+      return body.error;
+    }
+
+    return fallback;
+  }
+
+  /* =========================================================
      LOAD SAVED TRIPS
   ========================================================= */
 
@@ -267,16 +319,29 @@ export default function Home() {
 
       if (!response.ok) {
         throw new Error(
-          "Failed to generate trip plan"
+          await extractErrorMessage(
+            response,
+            "Failed to generate trip plan"
+          )
         );
       }
 
       const data =
         await response.json();
 
+      /* Legacy HTTP-200 error shape; kept for back-compat. */
+
       if (data.plan?.error) {
         throw new Error(
           data.plan.error
+        );
+      }
+
+      /* Catches a missing/renamed `plan` key instead of failing silently. */
+
+      if (!data.plan) {
+        throw new Error(
+          "The server did not return a trip plan."
         );
       }
 
@@ -436,7 +501,10 @@ export default function Home() {
 
       if (!response.ok) {
         throw new Error(
-          "Failed to delete trip"
+          await extractErrorMessage(
+            response,
+            "Failed to delete trip"
+          )
         );
       }
 
@@ -465,7 +533,7 @@ export default function Home() {
 
   const totalBudget = plan
     ? Object.values(
-      plan.estimated_budget
+      plan.estimated_budget ?? {}
     ).reduce(
       (
         total,
