@@ -9,16 +9,14 @@ from app.trip import TripRequest
 
 logger = logging.getLogger(__name__)
 
-MAX_ATTEMPTS = 2
+# Temperature per attempt, so len() is also the attempt count. Attempt 1 is
+# greedy for reproducibility; later attempts MUST sample, or they just
+# reproduce the output that was rejected. Temperature -- not the seed -- is the
+# lever: at temperature 0 llama.cpp decodes greedily and the seed does nothing.
+# Each attempt is a full generation (~80s for a 5-day plan), so keep this short.
+TEMPERATURES = (0.0, 0.4, 0.8)
 
-# The model cannot reliably add five numbers, so it lands near whatever ceiling
-# it is given. Asking it to aim under the budget (see the prompt) keeps most
-# answers inside it; this tolerance decides what to do with the rest. A small
-# overshoot is real information -- the trip costs a bit more than budgeted --
-# and the frontend clamps its progress bar at 100%, so rejecting it would turn
-# a displayable answer into a total failure. Beyond this, the model has simply
-# ignored the constraint.
-BUDGET_TOLERANCE = 1.10
+MAX_ATTEMPTS = len(TEMPERATURES)
 
 
 # ============================================================
@@ -121,37 +119,73 @@ Provide at least 3 practical tips."""
 
 
 # ============================================================
+# BUDGET FITTING
+# ============================================================
+
+def _fit_budget(plan: TripPlan, trip: TripRequest) -> None:
+    """Scale the breakdown down to fit the budget, keeping its proportions.
+
+    Measured on llama3.2: the model allocates *relatively* well -- the ratios
+    between accommodation, food, transport and activities are consistently
+    plausible -- but it cannot hold a running total, so whichever category it
+    emits last absorbs the whole arithmetic error. Five samples of one 200k
+    trip totalled 150k, 180k, 210k, 230k and 240k, with `miscellaneous`
+    swinging between 10k and 80k to make up the difference.
+
+    Rejecting the overshoots meant failing a request the model had otherwise
+    answered well, and no amount of prompting fixes arithmetic a 3B model
+    cannot do. So the split is the model's and the total is arithmetic's.
+    """
+    budget = plan.estimated_budget
+    amounts = budget.model_dump()
+    total = sum(amounts.values())
+
+    # Already inside the budget (or all zeros, which _validate rejects next).
+    if total <= trip.budget:
+        return
+
+    scale = trip.budget / total
+
+    # int() floors, so the scaled total can never exceed the budget. The few
+    # rupees of rounding shortfall are invisible against a trip budget.
+    for field, amount in amounts.items():
+        setattr(budget, field, int(amount * scale))
+
+    fitted = sum(budget.model_dump().values())
+
+    # Every category floored to zero, so the budget cannot be split five ways.
+    if fitted <= 0:
+        raise InvalidTripPlan(
+            f"a budget of {trip.budget:.0f} INR is too small to plan this trip"
+        )
+
+    logger.info(
+        "Scaled estimated budget %d -> %d to fit the %.0f limit.",
+        total,
+        fitted,
+        trip.budget,
+    )
+
+
+# ============================================================
 # VALIDATION
 # ============================================================
 
 def _validate(plan: TripPlan, trip: TripRequest) -> None:
     """Checks the schema cannot express.
 
-    format=<schema> guarantees the shape, never the semantics.
+    format=<schema> guarantees the shape, never the semantics. Runs after
+    _fit_budget, so the total is already known to fit.
     """
     if len(plan.days) != trip.days:
         raise InvalidTripPlan(
             f"asked for {trip.days} days, model returned {len(plan.days)}"
         )
 
-    total = sum(plan.estimated_budget.model_dump().values())
-
     # An all-zero budget is schema-valid but useless, and it makes the
     # frontend's progress bars compute 0/0 -> NaN%.
-    if total <= 0:
+    if sum(plan.estimated_budget.model_dump().values()) <= 0:
         raise InvalidTripPlan("model returned a zero budget")
-
-    if total > trip.budget * BUDGET_TOLERANCE:
-        raise InvalidTripPlan(
-            f"budget {total} exceeds the limit of {trip.budget}"
-        )
-
-    if total > trip.budget:
-        logger.info(
-            "Plan is %.0f over the %s budget; within tolerance, keeping it.",
-            total - trip.budget,
-            trip.budget,
-        )
 
 
 # ============================================================
@@ -169,20 +203,27 @@ def generate_trip_plan(trip: TripRequest) -> dict:
     last = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        temperature = TEMPERATURES[attempt - 1]
+
         try:
-            # A fresh seed per attempt: retrying a rejected plan is pointless if
-            # the sampler is deterministic, which at temperature 0 it is.
             plan = ask_ollama_json(
                 prompt,
                 TripPlan,
                 schema=schema,
                 seed=42 + attempt,
+                temperature=temperature,
             )
+            _fit_budget(plan, trip)
             _validate(plan, trip)
 
         except (InvalidTripPlan, OllamaBadOutput) as exc:
             last = exc
-            logger.warning("Trip plan attempt %d rejected: %s", attempt, exc)
+            logger.warning(
+                "Trip plan attempt %d (temp %.1f) rejected: %s",
+                attempt,
+                temperature,
+                exc,
+            )
             continue
 
         # Day numbering is cosmetic -- normalise rather than fail.
