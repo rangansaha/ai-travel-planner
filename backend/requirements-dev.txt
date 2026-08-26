@@ -1,0 +1,9 @@
+# Test-only dependencies.
+#
+# Deliberately separate from requirements.txt, which is limited to what the app
+# actually imports at runtime -- it previously carried ~25 packages nothing
+# imported while omitting fastapi, which the app does import.
+
+-r requirements.txt
+
+pytest==9.1.1

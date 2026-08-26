@@ -1,5 +1,13 @@
 "use client";
 
+// The budget range lives here and nowhere else. It is read by the number
+// input, the slider, the two end labels and the fill indicator -- when those
+// were five copies of the same literal, raising the cap meant the "₹2,00,000"
+// label kept claiming a limit that no longer existed.
+const BUDGET_MIN = 1_000;
+const BUDGET_MAX = 1_000_000;
+const BUDGET_STEP = 500;
+
 type TripFormProps = {
     destination: string;
     country: string;
@@ -43,7 +51,7 @@ export default function TripForm({
 }: TripFormProps) {
     const budgetPercentage = Math.min(
         100,
-        Math.max(0, ((budget - 1000) / (200000 - 1000)) * 100)
+        Math.max(0, ((budget - BUDGET_MIN) / (BUDGET_MAX - BUDGET_MIN)) * 100)
     );
 
     return (
@@ -191,15 +199,28 @@ export default function TripForm({
 
                     <input
                         type="number"
-                        min={1000}
-                        max={200000}
-                        step={500}
+                        min={BUDGET_MIN}
+                        max={BUDGET_MAX}
+                        step={BUDGET_STEP}
                         value={budget}
                         onChange={(e) =>
+                            // Only the ceiling is enforced per keystroke. Clamping
+                            // up to BUDGET_MIN here too would rewrite the first
+                            // digit of every number you type -- typing "250000"
+                            // became 1000 the moment you pressed "2".
+                            setBudget(
+                                Math.min(BUDGET_MAX, Number(e.target.value) || 0)
+                            )
+                        }
+                        onBlur={(e) =>
+                            // Reads the field rather than the `budget` closure:
+                            // the change and blur handlers can fire before a
+                            // re-render, and a stale closure would clamp
+                            // against the previous value.
                             setBudget(
                                 Math.min(
-                                    200000,
-                                    Math.max(1000, Number(e.target.value) || 1000)
+                                    BUDGET_MAX,
+                                    Math.max(BUDGET_MIN, Number(e.target.value) || BUDGET_MIN)
                                 )
                             )
                         }
@@ -210,17 +231,17 @@ export default function TripForm({
                     <div className="mt-5">
                         <input
                             type="range"
-                            min={1000}
-                            max={200000}
-                            step={500}
+                            min={BUDGET_MIN}
+                            max={BUDGET_MAX}
+                            step={BUDGET_STEP}
                             value={budget}
                             onChange={(e) => setBudget(Number(e.target.value))}
                             className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-700 accent-blue-500"
                         />
 
                         <div className="mt-2 flex justify-between text-xs text-slate-500">
-                            <span>₹1,000</span>
-                            <span>₹2,00,000</span>
+                            <span>₹{BUDGET_MIN.toLocaleString("en-IN")}</span>
+                            <span>₹{BUDGET_MAX.toLocaleString("en-IN")}</span>
                         </div>
                     </div>
 
