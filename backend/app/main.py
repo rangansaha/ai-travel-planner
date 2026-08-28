@@ -1,10 +1,13 @@
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import psycopg2
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.database import close_pool, create_tables, get_cursor
@@ -16,12 +19,29 @@ from app.services.ollama_service import (
     ask_ollama,
     close_client,
 )
-from app.services.trip_service import InvalidTripPlan, generate_trip_plan
+from app.services.trip_service import (
+    InvalidTripPlan,
+    generate_trip_plan,
+    stream_trip_plan,
+)
 from app.services.weather_service import get_weather
 from app.trip import TripRequest
 
 
+load_dotenv()
+
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+_cors_raw = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000",
+)
+CORS_ORIGINS = [origin.strip() for origin in _cors_raw.split(",") if origin.strip()]
 
 
 # ============================================================
@@ -64,10 +84,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -264,6 +281,109 @@ def create_trip_plan(
         "plan":
             plan,
     }
+
+
+# ============================================================
+# STREAM TRIP PLAN (SSE)
+# ============================================================
+
+@app.post("/trip/plan/stream")
+def stream_create_trip_plan(
+    trip: TripRequest
+):
+    def event_generator():
+        try:
+            for event_type, payload in stream_trip_plan(trip):
+                if event_type == "token":
+                    data = json.dumps({"token": payload})
+                    yield f"event: token\ndata: {data}\n\n"
+
+                elif event_type == "done":
+                    plan = payload
+                    trip_id = None
+
+                    try:
+                        with get_cursor(commit=True) as cursor:
+                            cursor.execute(
+                                """
+                                INSERT INTO trips
+                                (
+                                    destination,
+                                    country,
+                                    days,
+                                    travelers,
+                                    budget,
+                                    travel_style,
+                                    interests,
+                                    plan
+                                )
+                                VALUES
+                                (
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s,
+                                    %s
+                                )
+                                RETURNING id
+                                """,
+                                (
+                                    trip.destination,
+                                    trip.country,
+                                    trip.days,
+                                    trip.travelers,
+                                    trip.budget,
+                                    trip.travel_style,
+                                    ", ".join(trip.interests),
+                                    json.dumps(plan),
+                                ),
+                            )
+                            trip_id = cursor.fetchone()[0]
+
+                    except psycopg2.Error as exc:
+                        logger.warning("Failed to save streamed trip to database: %s", exc)
+
+                    response_data = {
+                        "id": trip_id,
+                        "destination": trip.destination,
+                        "country": trip.country,
+                        "days": trip.days,
+                        "travelers": trip.travelers,
+                        "budget": trip.budget,
+                        "travel_style": trip.travel_style,
+                        "interests": trip.interests,
+                        "plan": plan,
+                    }
+                    yield f"event: done\ndata: {json.dumps(response_data)}\n\n"
+
+        except (OllamaError, InvalidTripPlan) as exc:
+            http_err = _ai_http_error(exc)
+            err_data = json.dumps({
+                "detail": http_err.detail,
+                "status_code": http_err.status_code,
+            })
+            yield f"event: error\ndata: {err_data}\n\n"
+
+        except Exception as exc:
+            logger.exception("Unexpected error in trip plan stream")
+            err_data = json.dumps({
+                "detail": "The AI service failed. Please try again.",
+                "status_code": 502,
+            })
+            yield f"event: error\ndata: {err_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ============================================================
