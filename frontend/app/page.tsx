@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useTripPlanner } from "@/hooks/useTripPlanner";
 
 import TripForm from "./components/TripForm";
 import TripSummary from "./components/TripSummary";
@@ -8,560 +8,14 @@ import BudgetBreakdown from "./components/BudgetBreakdown";
 import Itinerary from "./components/Itinerary";
 import TravelTips from "./components/TravelTips";
 import WeatherCard from "./components/WeatherCard";
-
-/* =========================================================
-   TYPES
-========================================================= */
-
-type DayPlan = {
-  day: number;
-  morning: any;
-  afternoon: any;
-  evening: any;
-};
-
-type Budget = {
-  accommodation: number;
-  food: number;
-  transport: number;
-  activities: number;
-  miscellaneous: number;
-};
-
-type TripPlan = {
-  summary: string;
-  estimated_budget: Budget;
-  days: DayPlan[];
-  tips: string[];
-};
-
-type WeatherData = {
-  location: string;
-  country: string;
-  country_code?: string;
-
-  current: {
-    time: string;
-    temperature_2m: number;
-    relative_humidity_2m: number;
-    apparent_temperature: number;
-    precipitation: number;
-    weather_code: number;
-    wind_speed_10m: number;
-  };
-
-  daily: {
-    time: string[];
-    weather_code: number[];
-    temperature_2m_max: number[];
-    temperature_2m_min: number[];
-    precipitation_probability_max: number[];
-  };
-};
-
-type SavedTrip = {
-  id: number;
-  destination: string;
-  country?: string;
-  days: number;
-  travelers: number;
-  budget: number;
-  travel_style: string;
-  interests: string | string[];
-  plan: TripPlan | string;
-  created_at: string | null;
-};
+import SavedTrips from "./components/SavedTrips";
 
 /* =========================================================
    HOME
 ========================================================= */
 
 export default function Home() {
-  /* =======================================================
-     FORM STATE
-  ======================================================= */
-
-  const [destination, setDestination] = useState("");
-  const [country, setCountry] = useState("");
-  const [days, setDays] = useState(3);
-  const [travelers, setTravelers] = useState(2);
-  const [budget, setBudget] = useState(15000);
-  const [travelStyle, setTravelStyle] = useState("balanced");
-  const [interests, setInterests] = useState("");
-
-  /* =======================================================
-     RESULT STATE
-  ======================================================= */
-
-  const [plan, setPlan] = useState<TripPlan | null>(null);
-  const [weather, setWeather] = useState<WeatherData | null>(null);
-
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  /* =======================================================
-     SAVED TRIPS
-  ======================================================= */
-
-  const [savedTrips, setSavedTrips] = useState<SavedTrip[]>([]);
-  const [savedTripsOpen, setSavedTripsOpen] = useState(false);
-  const [loadingSavedTrips, setLoadingSavedTrips] = useState(false);
-
-  /* =========================================================
-     READ AN ERROR MESSAGE OUT OF A FAILED RESPONSE
-  ========================================================= */
-
-  async function extractErrorMessage(
-    response: Response,
-    fallback: string
-  ): Promise<string> {
-    let body: any = null;
-
-    try {
-      body = await response.json();
-    } catch {
-      return fallback;
-    }
-
-    /* FastAPI HTTPException: { detail: "..." } */
-
-    if (typeof body?.detail === "string") {
-      return body.detail;
-    }
-
-    /* FastAPI 422 validation: { detail: [{ loc, msg, type }] } */
-
-    if (Array.isArray(body?.detail)) {
-      const messages = body.detail
-        .map(
-          (item: any) =>
-            typeof item?.msg === "string"
-              ? item.msg
-              : null
-        )
-        .filter(Boolean);
-
-      if (messages.length) {
-        return messages.join(", ");
-      }
-    }
-
-    /* Legacy HTTP-200 error shapes, harmless to keep */
-
-    if (typeof body?.plan?.error === "string") {
-      return body.plan.error;
-    }
-
-    if (typeof body?.error === "string") {
-      return body.error;
-    }
-
-    return fallback;
-  }
-
-  /* =========================================================
-     LOAD SAVED TRIPS
-  ========================================================= */
-
-  async function loadSavedTrips() {
-    setLoadingSavedTrips(true);
-
-    try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/trips"
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to load saved trips");
-      }
-
-      const data = await response.json();
-
-      setSavedTrips(
-        Array.isArray(data.trips)
-          ? data.trips
-          : []
-      );
-    } catch (err) {
-      console.error(
-        "Failed to load saved trips:",
-        err
-      );
-    } finally {
-      setLoadingSavedTrips(false);
-    }
-  }
-
-  /* =========================================================
-     LOAD SAVED TRIPS WHEN PAGE OPENS
-  ========================================================= */
-
-  useEffect(() => {
-    loadSavedTrips();
-  }, []);
-
-  /* =========================================================
-     DATE FORMAT
-  ========================================================= */
-
-  function formatDate(
-    dateString: string | null
-  ) {
-    if (!dateString) {
-      return "Unknown date";
-    }
-
-    const date = new Date(dateString);
-
-    if (Number.isNaN(date.getTime())) {
-      return "Unknown date";
-    }
-
-    return date.toLocaleDateString(
-      "en-IN",
-      {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-      }
-    );
-  }
-
-  /* =========================================================
-     WEATHER
-  ========================================================= */
-
-  async function fetchWeather(
-    destinationName: string,
-    countryName: string
-  ) {
-    try {
-      const params = new URLSearchParams();
-
-      if (countryName.trim()) {
-        params.set(
-          "country",
-          countryName.trim()
-        );
-      }
-
-      const query = params.toString();
-
-      const url =
-        `http://127.0.0.1:8000/weather/${encodeURIComponent(
-          destinationName.trim()
-        )}` +
-        (query ? `?${query}` : "");
-
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = await response.json();
-
-      if (data.error) {
-        return null;
-      }
-
-      return (
-        data.weather ?? data
-      ) as WeatherData;
-    } catch (err) {
-      console.error(
-        "Weather error:",
-        err
-      );
-
-      return null;
-    }
-  }
-
-  /* =========================================================
-     GENERATE TRIP
-  ========================================================= */
-
-  async function generatePlan() {
-    setLoading(true);
-    setError("");
-    setPlan(null);
-    setWeather(null);
-
-    try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/trip/plan",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            destination,
-            country,
-            days,
-            travelers,
-            budget,
-            travel_style: travelStyle,
-
-            interests: interests
-              .split(",")
-              .map(
-                (item) => item.trim()
-              )
-              .filter(Boolean),
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          await extractErrorMessage(
-            response,
-            "Failed to generate trip plan"
-          )
-        );
-      }
-
-      const data =
-        await response.json();
-
-      /* Legacy HTTP-200 error shape; kept for back-compat. */
-
-      if (data.plan?.error) {
-        throw new Error(
-          data.plan.error
-        );
-      }
-
-      /* Catches a missing/renamed `plan` key instead of failing silently. */
-
-      if (!data.plan) {
-        throw new Error(
-          "The server did not return a trip plan."
-        );
-      }
-
-      setPlan(data.plan);
-
-      /* Get weather */
-
-      const weatherData =
-        await fetchWeather(
-          destination,
-          country
-        );
-
-      setWeather(weatherData);
-
-      /* Refresh saved trips */
-
-      await loadSavedTrips();
-
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Something went wrong while generating your trip."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  /* =========================================================
-     OPEN SAVED TRIP
-  ========================================================= */
-
-  async function openSavedTrip(
-    trip: SavedTrip
-  ) {
-    setError("");
-
-    try {
-      let savedPlan: TripPlan;
-
-      if (
-        typeof trip.plan ===
-        "string"
-      ) {
-        savedPlan =
-          JSON.parse(trip.plan);
-      } else {
-        savedPlan = trip.plan;
-      }
-
-      if (
-        !savedPlan ||
-        !savedPlan.summary
-      ) {
-        throw new Error(
-          "Saved trip data is invalid."
-        );
-      }
-
-      /* Restore form */
-
-      setDestination(
-        trip.destination
-      );
-
-      setCountry(
-        trip.country ?? ""
-      );
-
-      setDays(trip.days);
-      setTravelers(trip.travelers);
-      setBudget(Number(trip.budget));
-
-      setTravelStyle(
-        trip.travel_style
-      );
-
-      /* Restore interests */
-
-      if (
-        Array.isArray(
-          trip.interests
-        )
-      ) {
-        setInterests(
-          trip.interests.join(", ")
-        );
-      } else {
-        setInterests(
-          trip.interests ?? ""
-        );
-      }
-
-      /* Restore plan */
-
-      setPlan(savedPlan);
-
-      /* Get weather */
-
-      setWeather(null);
-
-      const weatherData =
-        await fetchWeather(
-          trip.destination,
-          trip.country ?? ""
-        );
-
-      setWeather(weatherData);
-
-      /* Close saved trips dropdown */
-
-      setSavedTripsOpen(false);
-
-      /* Scroll to top */
-
-      setTimeout(() => {
-        window.scrollTo({
-          top: 0,
-          behavior: "smooth",
-        });
-      }, 100);
-
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to open saved trip."
-      );
-    }
-  }
-
-  /* =========================================================
-     DELETE SAVED TRIP
-  ========================================================= */
-
-  async function deleteSavedTrip(
-    tripId: number
-  ) {
-    const confirmed =
-      window.confirm(
-        "Are you sure you want to delete this saved trip?"
-      );
-
-    if (!confirmed) {
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:8000/trips/${tripId}`,
-        {
-          method: "DELETE",
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error(
-          await extractErrorMessage(
-            response,
-            "Failed to delete trip"
-          )
-        );
-      }
-
-      /* Remove immediately from UI */
-
-      setSavedTrips(
-        (previous) =>
-          previous.filter(
-            (trip) =>
-              trip.id !== tripId
-          )
-      );
-
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Unable to delete saved trip."
-      );
-    }
-  }
-
-  /* =========================================================
-     TOTAL BUDGET
-  ========================================================= */
-
-  const totalBudget = plan
-    ? Object.values(
-      plan.estimated_budget ?? {}
-    ).reduce(
-      (
-        total,
-        value
-      ) =>
-        total +
-        Number(value),
-      0
-    )
-    : 0;
-
-  /* =========================================================
-     RESET TRIP
-  ========================================================= */
-
-  function resetTrip() {
-    setPlan(null);
-    setWeather(null);
-    setError("");
-
-    setDestination("");
-    setCountry("");
-
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
-  }
+  const trip = useTripPlanner();
 
   /* =========================================================
      UI
@@ -607,42 +61,42 @@ export default function Home() {
         ================================================= */}
 
         <TripForm
-          destination={destination}
-          country={country}
-          days={days}
-          travelers={travelers}
-          budget={budget}
-          travelStyle={travelStyle}
-          interests={interests}
+          destination={trip.destination}
+          country={trip.country}
+          days={trip.days}
+          travelers={trip.travelers}
+          budget={trip.budget}
+          travelStyle={trip.travelStyle}
+          interests={trip.interests}
 
           setDestination={
-            setDestination
+            trip.setDestination
           }
 
           setCountry={
-            setCountry
+            trip.setCountry
           }
 
-          setDays={setDays}
+          setDays={trip.setDays}
 
           setTravelers={
-            setTravelers
+            trip.setTravelers
           }
 
-          setBudget={setBudget}
+          setBudget={trip.setBudget}
 
           setTravelStyle={
-            setTravelStyle
+            trip.setTravelStyle
           }
 
           setInterests={
-            setInterests
+            trip.setInterests
           }
 
-          loading={loading}
+          loading={trip.loading}
 
           onGenerate={
-            generatePlan
+            trip.generatePlan
           }
         />
 
@@ -650,9 +104,25 @@ export default function Home() {
             ERROR
         ================================================= */}
 
-        {error && (
+        {trip.error && (
           <div className="mx-auto mt-5 max-w-3xl rounded-xl border border-red-900 bg-red-950/40 p-4 text-sm text-red-300">
-            {error}
+            {trip.error}
+          </div>
+        )}
+
+        {/* =================================================
+            STREAMING STATUS BANNER
+        ================================================= */}
+
+        {trip.isStreaming && (
+          <div className="mx-auto mt-6 flex max-w-3xl items-center justify-center gap-3 rounded-xl border border-blue-800/60 bg-blue-950/40 p-4 text-sm text-blue-300 shadow-lg shadow-blue-500/10">
+            <span className="relative flex h-3 w-3">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-blue-400 opacity-75" />
+              <span className="relative inline-flex h-3 w-3 rounded-full bg-blue-500" />
+            </span>
+            <span className="font-medium">
+              {trip.streamingPhase || "Generating your travel plan in real time..."}
+            </span>
           </div>
         )}
 
@@ -660,22 +130,22 @@ export default function Home() {
             RESULTS
         ================================================= */}
 
-        {plan && (
+        {trip.plan && (
           <section className="mt-12">
 
             {/* Summary */}
 
             <TripSummary
               destination={
-                destination
+                trip.destination
               }
 
               summary={
-                plan.summary
+                trip.plan.summary
               }
 
               totalBudget={
-                totalBudget
+                trip.totalBudget
               }
             />
 
@@ -683,20 +153,20 @@ export default function Home() {
 
             <BudgetBreakdown
               budgetData={
-                plan.estimated_budget
+                trip.plan.estimated_budget
               }
 
               totalBudget={
-                budget
+                trip.budget
               }
             />
 
             {/* Weather */}
 
-            {weather && (
+            {trip.weather && (
               <WeatherCard
                 weather={
-                  weather
+                  trip.weather
                 }
               />
             )}
@@ -704,20 +174,20 @@ export default function Home() {
             {/* Itinerary */}
 
             <Itinerary
-              days={plan.days}
+              days={trip.plan.days}
             />
 
             {/* Travel Tips */}
 
             <TravelTips
-              tips={plan.tips}
+              tips={trip.plan.tips}
             />
 
             {/* Reset */}
 
             <button
               onClick={
-                resetTrip
+                trip.resetTrip
               }
 
               className="mt-8 w-full rounded-xl border border-slate-700 px-6 py-3 font-semibold transition hover:bg-slate-900"
@@ -730,268 +200,36 @@ export default function Home() {
 
         {/* =================================================
             SAVED TRIPS
-            SMALL BOTTOM DROPDOWN
         ================================================= */}
 
-        <section className="mb-6 mt-12">
-
-          {/* Button */}
-
-          <button
-            type="button"
-
-            onClick={() =>
-              setSavedTripsOpen(
-                (previous) =>
-                  !previous
-              )
-            }
-
-            className="mx-auto flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 px-5 py-3 text-sm font-semibold text-slate-300 transition hover:border-slate-700 hover:bg-slate-900"
-          >
-
-            <span>
-              🧳
-            </span>
-
-            <span>
-              Saved Trips
-            </span>
-
-            <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs text-slate-400">
-              {
-                savedTrips.length
-              }
-            </span>
-
-            <span
-              className={`ml-1 text-xs text-slate-500 transition-transform duration-200 ${savedTripsOpen
-                ? "rotate-180"
-                : ""
-                }`}
-            >
-              ▼
-            </span>
-
-          </button>
-
-          {/* Dropdown */}
-
-          {savedTripsOpen && (
-            <div className="mx-auto mt-3 max-w-3xl overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-2xl">
-
-              {/* Header */}
-
-              <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-
-                <div>
-
-                  <p className="text-sm font-semibold text-slate-300">
-                    Saved Trips
-                  </p>
-
-                  <p className="text-xs text-slate-600">
-                    Your previous travel plans
-                  </p>
-
-                </div>
-
-                <button
-                  type="button"
-
-                  onClick={
-                    loadSavedTrips
-                  }
-
-                  disabled={
-                    loadingSavedTrips
-                  }
-
-                  className="rounded-lg px-3 py-2 text-xs font-medium text-blue-400 transition hover:bg-slate-800 hover:text-blue-300 disabled:opacity-50"
-                >
-                  {loadingSavedTrips
-                    ? "Refreshing..."
-                    : "↻ Refresh"}
-                </button>
-
-              </div>
-
-              {/* Loading */}
-
-              {loadingSavedTrips && (
-                <div className="px-5 py-8 text-center text-sm text-slate-500">
-                  Loading saved trips...
-                </div>
-              )}
-
-              {/* Empty */}
-
-              {!loadingSavedTrips &&
-                savedTrips.length ===
-                0 && (
-
-                  <div className="px-5 py-8 text-center">
-
-                    <div className="mb-2 text-2xl">
-                      ✈️
-                    </div>
-
-                    <p className="text-sm text-slate-400">
-                      No saved trips yet.
-                    </p>
-
-                    <p className="mt-1 text-xs text-slate-600">
-                      Generate a trip and
-                      it will appear here.
-                    </p>
-
-                  </div>
-                )}
-
-              {/* Trip List */}
-
-              {!loadingSavedTrips &&
-                savedTrips.length >
-                0 && (
-
-                  <div className="divide-y divide-slate-800">
-
-                    {savedTrips.map(
-                      (trip) => (
-
-                        <div
-                          key={
-                            trip.id
-                          }
-
-                          className="flex items-center justify-between gap-4 px-4 py-4 transition hover:bg-slate-950/70"
-                        >
-
-                          {/* Trip Information */}
-
-                          <div className="min-w-0 flex-1">
-
-                            <div className="flex flex-wrap items-center gap-2">
-
-                              <h3 className="truncate text-sm font-semibold text-white">
-
-                                {
-                                  trip.destination
-                                }
-
-                                {trip.country && (
-                                  <span className="font-normal text-slate-500">
-                                    ,{" "}
-                                    {
-                                      trip.country
-                                    }
-                                  </span>
-                                )}
-
-                              </h3>
-
-                              <span className="rounded-full bg-emerald-950/50 px-2 py-0.5 text-xs font-medium text-emerald-400">
-                                ₹
-                                {Number(
-                                  trip.budget
-                                ).toLocaleString(
-                                  "en-IN"
-                                )}
-                              </span>
-
-                            </div>
-
-                            <p className="mt-1 text-xs text-slate-500">
-
-                              {trip.days}{" "}
-                              {trip.days ===
-                                1
-                                ? "day"
-                                : "days"}
-
-                              {" • "}
-
-                              {
-                                trip.travelers
-                              }{" "}
-                              {trip.travelers ===
-                                1
-                                ? "traveler"
-                                : "travelers"}
-
-                              {" • "}
-
-                              <span className="capitalize">
-                                {
-                                  trip.travel_style
-                                }
-                              </span>
-
-                            </p>
-
-                            <p className="mt-1 text-[11px] text-slate-600">
-                              Saved{" "}
-                              {
-                                formatDate(
-                                  trip.created_at
-                                )
-                              }
-                            </p>
-
-                          </div>
-
-                          {/* Actions */}
-
-                          <div className="flex shrink-0 items-center gap-2">
-
-                            {/* View */}
-
-                            <button
-                              type="button"
-
-                              onClick={() =>
-                                openSavedTrip(
-                                  trip
-                                )
-                              }
-
-                              className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-blue-500"
-                            >
-                              View →
-                            </button>
-
-                            {/* Delete */}
-
-                            <button
-                              type="button"
-
-                              onClick={() =>
-                                deleteSavedTrip(
-                                  trip.id
-                                )
-                              }
-
-                              title="Delete saved trip"
-
-                              className="rounded-lg border border-red-900/60 px-3 py-2 text-sm text-red-400 transition hover:border-red-700 hover:bg-red-950/50 hover:text-red-300"
-                            >
-                              🗑️
-                            </button>
-
-                          </div>
-
-                        </div>
-
-                      )
-                    )}
-
-                  </div>
-                )}
-
-            </div>
-          )}
-
-        </section>
+        <SavedTrips
+          trips={trip.savedTrips}
+          isOpen={trip.savedTripsOpen}
+          isLoading={trip.loadingSavedTrips}
+
+          onToggle={() =>
+            trip.setSavedTripsOpen(
+              (previous) =>
+                !previous
+            )
+          }
+
+          onRefresh={
+            trip.loadSavedTrips
+          }
+
+          onOpen={
+            trip.openSavedTrip
+          }
+
+          onDelete={
+            trip.deleteSavedTrip
+          }
+
+          formatDate={
+            trip.formatDate
+          }
+        />
 
       </div>
 

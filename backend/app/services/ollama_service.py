@@ -262,3 +262,106 @@ def ask_ollama_json(
     except (json.JSONDecodeError, ValidationError) as exc:
         logger.warning("Ollama returned unusable JSON: %.300s", content)
         raise OllamaBadOutput("Ollama returned a malformed trip plan.") from exc
+
+
+# ============================================================
+# STREAMING CHAT
+# ============================================================
+
+def _chat_stream(
+    messages,
+    fmt=None,
+    num_predict: int = 4096,
+    seed: int = 42,
+    temperature: float = 0.0,
+):
+    """Yield content tokens as they arrive from Ollama.
+
+    No transport-level retries: a broken stream cannot be resumed, so the
+    caller (trip_service.stream_trip_plan) handles retry-at-a-higher-level.
+    """
+    client = get_client()
+
+    try:
+        stream = client.chat(
+            model=MODEL,
+            messages=messages,
+            format=fmt,
+            stream=True,
+            options={
+                "temperature": temperature,
+                "top_p": 1.0,
+                "seed": seed,
+                "num_predict": num_predict,
+                "num_ctx": 8192,
+            },
+        )
+
+        done_reason = None
+
+        for chunk in stream:
+            content = chunk.message.content or ""
+
+            if content:
+                yield content
+
+            # The last chunk carries done_reason.
+            if getattr(chunk, "done", False):
+                done_reason = getattr(chunk, "done_reason", None)
+
+        if done_reason == "length":
+            raise OllamaBadOutput(
+                "Ollama's response was cut off before the JSON was complete. "
+                "Try a shorter trip."
+            )
+
+    except ResponseError as exc:
+        raise OllamaError(
+            f"Ollama returned {exc.status_code}: {exc.error}"
+        ) from exc
+
+    except httpx.TimeoutException as exc:
+        raise OllamaTimeout(
+            f"Ollama did not respond within {TIMEOUT.read}s"
+        ) from exc
+
+    except ConnectionError as exc:
+        raise OllamaUnavailable(
+            f"Could not reach Ollama at {HOST}"
+        ) from exc
+
+    except httpx.HTTPError as exc:
+        raise OllamaUnavailable(f"{type(exc).__name__}: {exc}") from exc
+
+    except ValidationError as exc:
+        raise OllamaError(f"Invalid Ollama request: {exc}") from exc
+
+
+def stream_ollama_json(
+    prompt: str,
+    schema: dict,
+    *,
+    num_predict: int = 4096,
+    seed: int = 42,
+    temperature: float = 0.0,
+):
+    """Yield raw content tokens for SSE streaming.
+
+    Unlike ask_ollama_json, this does NOT parse or validate — the caller
+    accumulates and validates after the stream ends.
+    """
+    fmt = schema
+
+    yield from _chat_stream(
+        [
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        fmt=fmt,
+        num_predict=num_predict,
+        seed=seed,
+        temperature=temperature,
+    )
+

@@ -1,27 +1,22 @@
-type Budget = {
-    accommodation: number;
-    food: number;
-    transport: number;
-    activities: number;
-    miscellaneous: number;
-};
+import type { Budget, PartialBudget } from "@/lib/types";
 
 type BudgetBreakdownProps = {
-    budgetData: Budget;
+    budgetData?: Budget | PartialBudget;
     totalBudget: number;
 };
 
 export default function BudgetBreakdown({
-    budgetData,
+    budgetData = {},
     totalBudget,
 }: BudgetBreakdownProps) {
     const totalEstimated = Object.values(budgetData ?? {}).reduce(
-        (total, value) => total + Number(value),
+        (total, value) => total + (Number(value) || 0),
         0
     );
 
+    const safeTotal = totalBudget > 0 ? totalBudget : 1;
     const percentage = Math.min(
-        (totalEstimated / totalBudget) * 100,
+        (totalEstimated / safeTotal) * 100,
         100
     );
 

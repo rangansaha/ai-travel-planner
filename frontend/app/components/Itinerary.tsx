@@ -1,21 +1,11 @@
-type Activity = {
-    place: string;
-    activity: string;
-};
-
-type DayPlan = {
-    day: number;
-    morning: Activity;
-    afternoon: Activity;
-    evening: Activity;
-};
+import type { Activity, DayPlan, PartialActivity, PartialDayPlan } from "@/lib/types";
 
 type ItineraryProps = {
-    days: DayPlan[];
+    days?: (DayPlan | PartialDayPlan)[];
 };
 
 type ActivityCardProps = {
-    activity: Activity;
+    activity?: Activity | PartialActivity;
     label: string;
     icon: string;
 };
@@ -25,6 +15,9 @@ function ActivityCard({
     label,
     icon,
 }: ActivityCardProps) {
+    const place = activity?.place || "Planning place...";
+    const description = activity?.activity || "Drafting activity...";
+
     return (
         <div>
             <p className="mb-3 text-sm font-semibold text-blue-400">
@@ -32,23 +25,25 @@ function ActivityCard({
             </p>
 
             <h5 className="text-xl font-bold text-white">
-                📍 {activity.place}
+                📍 {place}
             </h5>
 
             <p className="mt-2 leading-6 text-slate-300">
-                {activity.activity}
+                {description}
             </p>
 
-            <a
-                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
-                    activity.place
-                )}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-4 inline-block rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-blue-400 transition hover:bg-slate-800"
-            >
-                🗺️ View on Map
-            </a>
+            {activity?.place && (
+                <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                        activity.place
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-4 inline-block rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-blue-400 transition hover:bg-slate-800"
+                >
+                    🗺️ View on Map
+                </a>
+            )}
         </div>
     );
 }
@@ -64,17 +59,16 @@ export default function Itinerary({
             </h3>
 
             <div className="space-y-6">
-
-                {days.map((day) => (
+                {(days || []).map((day, idx) => (
                     <article
-                        key={day.day}
+                        key={day.day || idx + 1}
                         className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900"
                     >
 
                         {/* Day Header */}
                         <div className="border-b border-slate-800 bg-slate-950 px-6 py-6">
                             <h4 className="text-2xl font-bold">
-                                Day {day.day}
+                                Day {day.day || idx + 1}
                             </h4>
                         </div>
 

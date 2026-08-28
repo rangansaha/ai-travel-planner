@@ -1,6 +1,6 @@
 type TripSummaryProps = {
     destination: string;
-    summary: string;
+    summary?: string;
     totalBudget: number;
 };
 
@@ -34,7 +34,7 @@ export default function TripSummary({
             </div>
 
             <p className="mt-5 leading-7 text-slate-300">
-                {summary}
+                {summary || "Generating your trip summary..."}
             </p>
         </section>
     );
